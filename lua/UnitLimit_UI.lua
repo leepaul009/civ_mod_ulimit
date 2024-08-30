@@ -122,7 +122,7 @@ function GetUnitInQueue(playerID, cityID)
 		local pPlayerConfig  = PlayerConfigurations[ playerID ];
 		local pPlayerCivName = pPlayerConfig:GetCivilizationTypeName();
 		print("      [UnitLimit::EM::GetUnitInQueue] Error! For civ="..pPlayerCivName..", cityID="..cityID..
-					" return invalid city="..Locale.Lookup(pCity:GetName()).."!" );
+					" get invalid city="..Locale.Lookup(pCity:GetName()).."!" );
 		return nil;
 	end
 	
@@ -215,7 +215,10 @@ function RemoveUnitInQueue(playerID, cityID)
 	
 	local pCity:table = pPlayer:GetCities():FindID(cityID);
 	if pCity == nil then
-		print("      [UnitLimit::EM::RemoveUnitInQueue] Error! Invalid city instance with given cityID! " );
+		local pPlayerConfig  = PlayerConfigurations[ playerID ];
+		local pPlayerCivName = pPlayerConfig:GetCivilizationTypeName();
+		print("      [UnitLimit::EM::GetUnitInQueue] Error! For civ="..pPlayerCivName..", cityID="..cityID..
+					" get invalid city="..Locale.Lookup(pCity:GetName()).."!" );
 		return false;
 	end
 	
