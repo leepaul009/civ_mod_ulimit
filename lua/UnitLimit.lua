@@ -98,19 +98,22 @@ local pSettlerBuilding = "BUILDING_ULE_SETTLER_INTERNAL"
 local nEventUnitComplete = 1911
 local nEventUnitChange   = 1912
 
-function CityIsExemptCity(cityID)
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+
+function IsProcessedCity(city_id)
 	for k, v in pairs(ExposedMembers.UnitLimitProcessedCity) do
-		--print("        check ExemptCity. k="..tostring(k).." v="..v); 
-		if k == cityID then return true end
+		if k == city_id then return true end
 	end
 	return false
 end
 
-function UpdateExemptCityTable(playerID, cityID)
-	ExposedMembers.UnitLimitProcessedCity[cityID] = 1
+function UpdateProcessedCity(player_id, city_id)
+	ExposedMembers.UnitLimitProcessedCity[city_id] = 1
 end
 
-function InitExemptCityTable(playerID)
+function InitProcessedCity(player_id)
 	ExposedMembers.UnitLimitProcessedCity = {}
 end
 
@@ -120,121 +123,141 @@ function round(num, numDecimalPlaces)
 	return math.floor(num * mult + 0.5) / mult
 end
 
+-- 判断是否是城邦
+function CityStateDetecter(civ_name)
+	if civ_name ~= nil then
+		for row in tExemptPlayers() do
+			if civ_name == row.CivilizationType then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+
+---------------------------------------------------------------------
+---------------------------------------------------------------------
 ---------------------------------------------------------------------
 -- 判断“正在建造的单位”是否匹配“目标单位类型”
-function InQueueUnitMatchTargetUnitType(tFormationClassTable, unitInQueue, pUnitForcesType)
-	if pUnitForcesType == "SETTLER" or pUnitForcesType == "BUILDER" then
-		if tFormationClassTable == unitInQueue["index"] then
+function OnBuildUnitMatchGivenUnitType(unit_info_on_build, formation_class_table, unit_forces_type)
+	if unit_forces_type == "SETTLER" or unit_forces_type == "BUILDER" then
+		-- 当这两个类别时，传入的formation_class_table是index，不是表
+		if formation_class_table == unit_info_on_build["index"] then
 			return true;
 		else
 			return false;
 		end
 	end
-	for row in tFormationClassTable() do
+	for row in formation_class_table() do
 		-- 正在建造的单位 匹配了 当前想要限制的类型 内的某一个单位
-		if GameInfo.Units[row.UnitType].Index == unitInQueue["index"] then
+		if GameInfo.Units[row.UnitType].Index == unit_info_on_build["index"] then
 			if G_IsDebug then
-				print("          匹配! 正在建造的单位 "..tostring(unitInQueue["type"])..
-					  " 是我们要限制的单位: "..row.UnitType..", 限制的类型(组): "..pUnitForcesType);
+				print("          匹配! 正在建造的单位 "..tostring(unit_info_on_build["type"])..
+					  " 是我们要限制的单位: "..row.UnitType..", 限制的类型(组): "..unit_forces_type);
 			end
 			return true;
 		end
 	end
-	if G_IsDebug then print("          不匹配! 正在建造的单位: "..tostring(unitInQueue["type"]).." 不是我们想要限制的类型(组): "..pUnitForcesType); end
+	if G_IsDebug then print("          不匹配! 正在建造的单位: "..tostring(unit_info_on_build["type"]).." 不是我们想要限制的类型(组): "..unit_forces_type); end
 	return false;
 end
 
-function RemoveIBuilding( pPlayerID, iCity, iBuilding, tFormationClassTable, pUnitForcesType,  pPlayerCivName, pBuildingType )
-	local isTargetUnitTypeOnBuilding = false;
-	local cityID = iCity:GetID();
-	local unitInQueue = ExposedMembers.UnitLimitInfo.GetUnitInQueue(pPlayerID, cityID); -- {type, index, name}
-	if unitInQueue ~= nil then
-		isTargetUnitTypeOnBuilding = InQueueUnitMatchTargetUnitType(tFormationClassTable, unitInQueue, pUnitForcesType);
+
+function RemoveBuildingWithCheck(player_id, p_city, building_index, formation_class_table,
+																 unit_forces_type, civ_name, building_type)
+	local is_on_build = false;
+	local city_id = p_city:GetID();
+	local unit_info_on_build = ExposedMembers.UnitLimitInfo.GetUnitInQueue(player_id, city_id); -- {type, index, name}
+	if unit_info_on_build ~= nil then
+		is_on_build = OnBuildUnitMatchGivenUnitType(unit_info_on_build, formation_class_table, unit_forces_type);
 	end	
 	-- 保留正在建造的单位
-	if isTargetUnitTypeOnBuilding then
+	if is_on_build then
 		if G_IsDebug then
-			print("        超过限制! 但是, 保留正在训练的'对应单位'. 玩家 "..pPlayerCivName..
-					" 可以建造 "..pBuildingType.." 在城市 "..Locale.Lookup(iCity:GetName()) );
+			print("        超过限制! 但是, 保留正在训练的'对应单位'. 玩家 "..civ_name..
+					" 可以建造 "..building_type.." 在城市 "..Locale.Lookup(p_city:GetName()) );
 		end
-		PlaceBuildingInCityCenter(iCity, iBuilding);
+		PlaceBuildingInCityCenter(p_city, building_index);
 	else
-		RemoveBuildingFromCityCenter(iCity, iBuilding);
+		RemoveBuildingFromCityCenter(p_city, building_index);
 	end
 end
 
--- 对目标类型单位（陆地，海洋...）进行处理。 6 space + 8 space
----- 参数： iBuilding: “目标类型单位”对应的“启动建筑”的index
-function UpdateAllCityStatus(pPlayer, targetCityID, iBuilding, nMax, nExist, tFormationClassTable, pUnitForcesType, eventID)
-	if G_IsDebug then print("      [UL::UpdateAllCityStatus]") end
-	local isAllowed	 = (nMax > nExist);
-	local pPlayerID      = pPlayer:GetID();
-	local pPlayerConfig  = PlayerConfigurations[ pPlayerID ];
-	local pPlayerCivName = pPlayerConfig:GetCivilizationTypeName();
-	local tPlayerCities = pPlayer:GetCities();
-	local pBuildingType = GameInfo.Buildings[iBuilding].BuildingType;
-	
-	-- 存在target city时，表示“建设事件”，我们只处理这个城市
-	-- 如果是unit complete事件, or unit change事件:
-	if targetCityID ~= nil then
-		local unitInQueue = ExposedMembers.UnitLimitInfo.GetUnitInQueue(pPlayerID, targetCityID); -- {type, index, name}
-		local targetCity:table = pPlayer:GetCities():FindID(targetCityID);
 
-		local isTargetUnitTypeOnBuilding = false;
-		if unitInQueue ~= nil then
-			isTargetUnitTypeOnBuilding = InQueueUnitMatchTargetUnitType(tFormationClassTable, unitInQueue, pUnitForcesType);
+-- 对目标类型单位（陆地，海洋...）进行处理。 6 space + 8 space
+---- 参数： building_index: “目标类型单位”对应的“启动建筑”的index
+function UpdateAllCityStatus(pPlayer, target_city_id, building_index, num_max, num_exist, formation_class_table, unit_forces_type, event_id)
+	if G_IsDebug then print("      [UL::UpdateAllCityStatus]") end
+	local build_is_allowed = (num_max > num_exist);
+	local player_id      = pPlayer:GetID();
+	local pPlayerConfig  = PlayerConfigurations[ player_id ];
+	local civ_name       = pPlayerConfig:GetCivilizationTypeName();
+	local player_cities  = pPlayer:GetCities();
+	local building_type  = GameInfo.Buildings[building_index].BuildingType;
+	
+	if target_city_id ~= nil then --------------------------------------------
+		-- 存在target city时，表示“建设事件”，我们只处理这个城市
+		-- 如果是unit complete事件, or unit change事件:
+		local unit_info_on_build = ExposedMembers.UnitLimitInfo.GetUnitInQueue(player_id, target_city_id); -- {type, index, name}
+		local target_city:table = pPlayer:GetCities():FindID(target_city_id);
+
+		local is_on_build = false;
+		if unit_info_on_build ~= nil then
+			is_on_build = OnBuildUnitMatchGivenUnitType(unit_info_on_build, formation_class_table, unit_forces_type);
 		end
 
-		if isTargetUnitTypeOnBuilding then
-			if nExist < nMax then
-				PlaceBuildingInCityCenter(targetCity, iBuilding); -- 此城市启动
-			elseif nExist == nMax then
-				-- case unit complete + exist==max(pUnitForcesType) + not empty queue + queue item is pUnitForcesType  ==> add iBuilding to targetCity
-				for i, iCity in tPlayerCities:Members() do
-					local iCityID = iCity:GetID();
-					if iCityID == targetCityID then
-						PlaceBuildingInCityCenter(iCity, iBuilding); -- 此城市启动
+		if is_on_build then
+			if num_exist < num_max then
+				PlaceBuildingInCityCenter(target_city, building_index); -- 此城市启动
+			elseif num_exist == num_max then
+				-- case unit complete + exist==max(unit_forces_type) + not empty queue + queue item is unit_forces_type  ==> add building_index to target_city
+				for i, city in player_cities:Members() do
+					if city:GetID() == target_city_id then
+						PlaceBuildingInCityCenter(city, building_index); -- 此城市启动
 					else -- city other than target city:
 						-- 如果是自然的unit complete，是不需要这步的；因为后一个event必然是init，这里会计算这步的
 						-- 但如果是用金币、信仰买的unit complete，exist==max表示complete前，没有到上限，所有城市可以建造；而complete后，加上queue内单位，刚好到上限，需要此步
-						RemoveIBuilding( pPlayerID, iCity, iBuilding, tFormationClassTable, pUnitForcesType,  pPlayerCivName, pBuildingType )
+						RemoveBuildingWithCheck( player_id, city, building_index, formation_class_table, unit_forces_type,  civ_name, building_type )
 					end
 				end
-			else -- nExist > nMax
+			else -- num_exist > num_max
 				-- 这里不会发生“人为”的case unit change，因为人为的改变建设单位之前，肯定会出发init event
 				-- 但是这里会发生“队列”产生的case unit change
-				-- case unit complete + exist>max(pUnitForcesType) + not empty queue +  queue item is pUnitForcesType  ==> remove iBuilding to targetCity
-				RemoveBuildingFromCityCenter(targetCity, iBuilding); -- 此城市禁止
-				if eventID == nEventUnitComplete then
-					if G_IsDebug then print("        城市"..Locale.Lookup(targetCity:GetName()).."已经超过限制:n_exist("..nExist..") > n_max("..nMax..")，但是仍然尝试制造"..pUnitForcesType); end
-					status = ExposedMembers.UnitLimitInfo.RemoveUnitInQueue(pPlayerID, targetCityID)
-					if not(status) then print("        Failed to remove unit in building-queue"); end
+				-- case unit complete + exist>max(unit_forces_type) + not empty queue +  queue item is unit_forces_type  ==> remove building_index to target_city
+				RemoveBuildingFromCityCenter(target_city, building_index); -- 此城市禁止
+				if event_id == nEventUnitComplete then
+					if G_IsDebug then print("        城市"..Locale.Lookup(target_city:GetName()).."已经超过限制:n_exist("..num_exist..") > n_max("..num_max..")，但是仍然尝试制造"..unit_forces_type); end
+					status = ExposedMembers.UnitLimitInfo.RemoveUnitInQueue(player_id, target_city_id)
+					if not(status) then print("        ERROR! Failed to remove unit in building-queue"); end
 				end
 			end
 		else
-			if nExist < nMax then -- 所有城市启动
-				for i, iCity in tPlayerCities:Members() do
-					PlaceBuildingInCityCenter(iCity, iBuilding);
+			if num_exist < num_max then -- 所有城市启动
+				for i, city in player_cities:Members() do
+					PlaceBuildingInCityCenter(city, building_index);
 				end
-			else -- nExist >= nMax
-				RemoveBuildingFromCityCenter(targetCity, iBuilding); -- 只禁止此城市，不需要禁止其他城市
+			else -- num_exist >= num_max
+				RemoveBuildingFromCityCenter(target_city, building_index); -- 只禁止此城市，不需要禁止其他城市
 			end
 		end
-	else -- 不存在target city时，对所有城市(init event):
+	else --------------------------------------------
+		--------------------------------------------
+		-- 不存在target city时，对所有城市(init event):
 		if G_IsDebug then print("      对所有城市:") end
-		for i, iCity in tPlayerCities:Members() do
+		for i, city in player_cities:Members() do
 
-			local cityID = iCity:GetID();
+			local city_id = city:GetID();
 			local is_exempt_city = false;
-			is_exempt_city = CityIsExemptCity(cityID);
+			is_exempt_city = IsProcessedCity(city_id);
 
 			if is_exempt_city then
-				if G_IsDebug then print("        城市 "..Locale.Lookup(iCity:GetName()).." 在前面的unit even中处理过, 可以忽略." ); end
+				if G_IsDebug then print("        城市 "..Locale.Lookup(city:GetName()).." 在前面的unit even中处理过, 可以忽略." ); end
 			else
-				if isAllowed then
-					PlaceBuildingInCityCenter(iCity, iBuilding);
+				if build_is_allowed then
+					PlaceBuildingInCityCenter(city, building_index);
 				else
-					RemoveIBuilding( pPlayerID, iCity, iBuilding, tFormationClassTable, pUnitForcesType,  pPlayerCivName, pBuildingType )
+					RemoveBuildingWithCheck( player_id, city, building_index, formation_class_table, unit_forces_type,  civ_name, building_type )
 				end	-- end if
 			end
 		end -- end for
@@ -243,141 +266,84 @@ end
 
 
 
-
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+---------------------------------------------------------------------
 -- 建设“某种unit对应的特殊建筑”，以允许此种unit的建造, 8 space
-function PlaceBuildingInCityCenter(pCity, iBuilding)
-	local iCityPlotIndex = Map.GetPlot(pCity:GetX(), pCity:GetY()):GetIndex();
-	-- 当前城市 没有建筑iBuilding：
-	if not pCity:GetBuildings():HasBuilding(iBuilding) then
-		-- if G_IsDebug then
-		-- 	print ("      [UL::启动]: Attempting to add Building ID#" .. iBuilding ..
-		-- 		" : " .. GameInfo.Buildings[iBuilding].BuildingType .. 
-		-- 		" to the city of " .. Locale.Lookup(pCity:GetName()));
-		-- end
-		pCity:GetBuildQueue():CreateIncompleteBuilding(iBuilding, iCityPlotIndex, 100);
-		-------------------------------------------------------------------------------
-		if pCity:GetBuildings():HasBuilding(iBuilding) then
-			if G_IsDebug then print ("        [UL::启动] 成功，添加'启动建筑'在城市"..Locale.Lookup(pCity:GetName())..".") end
+function PlaceBuildingInCityCenter(p_city, building_index)
+	local city_plot_index = Map.GetPlot(p_city:GetX(), p_city:GetY()):GetIndex();
+	-- 当前城市 没有对应建筑：
+	if not p_city:GetBuildings():HasBuilding(building_index) then
+		p_city:GetBuildQueue():CreateIncompleteBuilding(building_index, city_plot_index, 100);
+
+		if p_city:GetBuildings():HasBuilding(building_index) then
+			if G_IsDebug then print ("        [UL::启动] 成功，添加'启动建筑'在城市"..Locale.Lookup(p_city:GetName())..".") end
 		else
-			if G_IsDebug then print ("        [UL::启动] 失败，未能添加'启动建筑'在城市"..Locale.Lookup(pCity:GetName())..".") end
+			if G_IsDebug then print ("        [UL::启动] 失败，未能添加'启动建筑'在城市"..Locale.Lookup(p_city:GetName())..".") end
 		end
-	-- 当前城市 有建筑iBuilding：
+	-- 当前城市 有对应建筑：
 	else
 		if G_IsDebug then
-			print ("        [UL::启动] 启动建筑(ID=" .. iBuilding .. 
-				", type=" .. GameInfo.Buildings[iBuilding].BuildingType .. 
-				")已经存在，在城市 " .. Locale.Lookup(pCity:GetName()));
+			print ("        [UL::启动] 启动建筑(ID=" .. building_index .. 
+				", type=" .. GameInfo.Buildings[building_index].BuildingType .. 
+				")已经存在，在城市 " .. Locale.Lookup(p_city:GetName()));
 		end
-		if pCity:GetBuildings():IsPillaged(iBuilding) then
-			if G_IsDebug then
-				print ("        [UL::启动] 建筑被焚毁，恢复此建筑.");
-			end
-			pCity:GetBuildings():RemoveBuilding(iBuilding);
-			pCity:GetBuildQueue():CreateIncompleteBuilding(iBuilding, iCityPlotIndex, 100);
+
+		if p_city:GetBuildings():IsPillaged(building_index) then
+			if G_IsDebug then print ("        [UL::启动] 建筑被焚毁，恢复此建筑."); end
+			p_city:GetBuildings():RemoveBuilding(building_index);
+			p_city:GetBuildQueue():CreateIncompleteBuilding(building_index, city_plot_index, 100);
 		end -- end pillaged
 	end -- end building existing
 end
 
 -- 去除“某种unit对应的特殊建筑”，以禁止此种unit的建造, 8 space
-function RemoveBuildingFromCityCenter(pCity, iBuilding)
-	-- local iCityPlotIndex = Map.GetPlot(pCity:GetX(), pCity:GetY()):GetIndex();
-	
-	if pCity:GetBuildings():HasBuilding(iBuilding) then
-		-- if G_IsDebug then
-		-- 	print ("      [UL::关闭] Attempting to REMOVE Building ID#" .. iBuilding .. 
-		-- 		" : " .. GameInfo.Buildings[iBuilding].BuildingType .. 
-		-- 		" from the city of " .. Locale.Lookup(pCity:GetName()));
-		-- end
-		pCity:GetBuildings():RemoveBuilding(iBuilding);
-		------------------------------------------------------------------
-		if pCity:GetBuildings():HasBuilding(iBuilding) then
-			if G_IsDebug then print ("        [UL::关闭] FAILED to REMOVE Building at city "..Locale.Lookup(pCity:GetName())..".") end
+function RemoveBuildingFromCityCenter(p_city, building_index)
+	if p_city:GetBuildings():HasBuilding(building_index) then
+		p_city:GetBuildings():RemoveBuilding(building_index);
+
+		if p_city:GetBuildings():HasBuilding(building_index) then
+			if G_IsDebug then print ("        [UL::关闭] 没有成功删除'启动建筑'在城市"..Locale.Lookup(p_city:GetName())..".") end
 		else
-			if G_IsDebug then print ("        [UL::关闭] 成功删除'启动建筑'在城市"..Locale.Lookup(pCity:GetName())..".") end
+			if G_IsDebug then print ("        [UL::关闭] 成功删除'启动建筑'在城市"..Locale.Lookup(p_city:GetName())..".") end
 		end
 	else
-		if G_IsDebug then print ("        [UL::关闭] '启动建筑'此前已经被删除，在城市"..Locale.Lookup(pCity:GetName())..".") end
+		if G_IsDebug then print ("        [UL::关闭] '启动建筑'此前已经被删除，在城市"..Locale.Lookup(p_city:GetName())..".") end
 	end
 end
 
 
 ---------------------------------------------------------------------
--- 计算陆地、海洋、辅助、宗教单位的数量:
-function GetFormationClassUnitLimit(pPlayer, pPlayerCivName, 
-	nUnitCityRatio, nUnitDistrictRatio, nUnitBuildingRatio, nPalaceUnitTypeQuota, 
-	pDistrictType, tDistrictBuildingsTable, pUnitForcesType)
-	
-	local nPalaceAllotment;
-	local nPlayerUnitCityAllotment;
-	local nPlayerDistAllotment;
-	local nPlayerBldgAllotment;
-	local nPlayerCityCount = pPlayer:GetCities():GetCount();
-	local totalPopulation  = 0;
-	
-	if nPlayerCityCount == nil or nPlayerCityCount == 0 or nPlayerCityCount == -1 then
-		if G_IsDebug then print ("  [UL::计算最大单位数量] " .. pPlayerCivName .. " 没有城市, max unit = 0.") end
-		return 0;
-	else
-		nPalaceAllotment 		 = nPalaceUnitTypeQuota;
-		nPlayerUnitCityAllotment = 0;
-		nPlayerDistAllotment 	 = 0;
-		nPlayerBldgAllotment 	 = 0;
-		local tPlayerCities 	 = pPlayer:GetCities();
-		
-		for i, iCity in tPlayerCities:Members() do
-			local iPopulation = iCity:GetPopulation();
-			totalPopulation = totalPopulation + iPopulation;
-		end
-		nPlayerUnitCityAllotment = totalPopulation * nUnitCityRatio;
-	end
-
-	local nTypeUnitLimitCount = nPalaceAllotment + nPlayerUnitCityAllotment + nPlayerDistAllotment + nPlayerBldgAllotment;
-	local nTypeUnitLimitCountRounded = math.floor(nTypeUnitLimitCount);
-	if G_IsDebug then
-		print ("  [UL::计算最大单位数量] 玩家 "..pPlayerCivName.."(人口是 "..totalPopulation..") 最大单位数量="
-			..nTypeUnitLimitCountRounded.."(宫殿+人口: "..nPalaceAllotment.."+"..nPlayerUnitCityAllotment..") 单位="..pUnitForcesType..".");
-	end
-	return nTypeUnitLimitCountRounded;
-end
-
--- 计算工人、移民者的数量:
-function GetIndividualUnitLimit(pPlayer, pPlayerCivName, nUnitCityRatio, nPalaceUnitTypeQuota, pUnitForcesType)
-
-	local nPalaceAllotment;
-	local nPlayerUnitCityAllotment;
-	local nPlayerCityCount = pPlayer:GetCities():GetCount();
-	local totalPopulation  = 0;
-	
-	if nPlayerCityCount == nil or nPlayerCityCount == 0 or nPlayerCityCount == -1 then 
-		if G_IsDebug then print ("  [UL::计算最大单位数量] " .. pPlayerCivName .. " 没有城市, max unit = 0.") end
-		return 0;
-	else
-		nPalaceAllotment 		 = nPalaceUnitTypeQuota;
-		nPlayerUnitCityAllotment = 0;
-		local tPlayerCities 	 = pPlayer:GetCities();
-		
-		for i, iCity in tPlayerCities:Members() do
-			totalPopulation = totalPopulation + iCity:GetPopulation();
-		end
-		nPlayerUnitCityAllotment = totalPopulation * nUnitCityRatio;
-	end
-
-	local nTypeUnitLimitCount = nPalaceAllotment + nPlayerUnitCityAllotment;
-	local nTypeUnitLimitCountRounded = math.floor(nTypeUnitLimitCount);
-	if G_IsDebug then
-		print ("  [UL::计算最大单位数量] 玩家 "..pPlayerCivName.."(人口是 "..totalPopulation..") 最大单位数量="
-			..nTypeUnitLimitCountRounded.."(宫殿+人口: "..nPalaceAllotment.."+"..nPlayerUnitCityAllotment..") 单位="..pUnitForcesType..".");
-	end
-	return nTypeUnitLimitCountRounded;
-end
-
-
 ---------------------------------------------------------------------
+---------------------------------------------------------------------
+-- 计算每种单位的数量:
+function GetUnitLimitByUnitClass(player, civ_name, population_rate, num_from_palace, unit_forces_type)
+	local num_city = player:GetCities():GetCount();
+	if num_city == nil or num_city == 0 or num_city == -1 then
+		if G_IsDebug then print ("  [UL::计算最大单位数量] " .. civ_name .. " 没有城市, max unit = 0.") end
+		return 0;
+	end
+
+  local total_population  = 0;
+  local player_cities     = player:GetCities();
+  for i, city in player_cities:Members() do
+    total_population = total_population + city:GetPopulation();
+  end
+
+  local num_from_population = total_population * population_rate;
+	local num_all = num_from_palace + num_from_population;
+	local num_all_rounded = math.floor(num_all);
+	if G_IsDebug then
+		print ("  [UL::计算最大单位数量] 玩家 "..civ_name.."(人口是 "..total_population..") 最大单位数量="
+			..num_all_rounded.."(宫殿+人口: "..num_from_palace.."+"..num_from_population..") 单位="..unit_forces_type..".");
+	end
+	return num_all_rounded;
+end
 
 -- 单位类型'inUnitType'存在于表'tFormationClassTable'中:
-function matchUnitTypeIndex(tFormationClassTable, inUnitType)
-	for row in tFormationClassTable() do -- match types group in DB
-		if GameInfo.Units[row.UnitType].Index == inUnitType then
+function matchUnitTypeIndex(formation_class_table, unit_type)
+	for row in formation_class_table() do
+		if GameInfo.Units[row.UnitType].Index == unit_type then
 			return true;
 		end
 	end
@@ -493,19 +459,8 @@ end
 
 
 ---------------------------------------------------------------------
--- 判断是否是城邦
-function CityStateDetecter(pPlayerCivName)
-	if pPlayerCivName ~= nil then
-		for row in tExemptPlayers() do
-			if pPlayerCivName == row.CivilizationType then
-				return true
-			end
-		end
-	end
-	return false
-end
-
-
+---------------------------------------------------------------------
+---------------------------------------------------------------------
 ----------------------------------------------- 主函数: Event Hooks and Iterative Functions ---------------------------------------------------
 -- bIsFirstTime: not used
 function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
@@ -554,9 +509,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 			if isCityState then	
 				nAllowedLandUnits = nCityStateAllowedLandUnits;
 			else
-				nAllowedLandUnits = GetFormationClassUnitLimit(pPlayer, pPlayerCivName, 
-					nLandUnitCityMultiplier, nLandUnitDistrictMultiplier, nLandUnitBuildingMultiplier, nLandPalaceUnitTypeQuota, 
-					pLandDistrictType, tLandDistrictBuildingsTable, pLandUnitForcesType);
+				nAllowedLandUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nLandUnitCityMultiplier,
+																											 nLandPalaceUnitTypeQuota, pLandUnitForcesType);
 			end
 			isLandAvailable = (nAllowedLandUnits > nLandUnitCount);
 			if G_IsDebug then 
@@ -577,9 +531,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 			if isCityState then	
 				nAllowedSeaUnits = nCityStateAllowedSeaUnits;
 			else
-				nAllowedSeaUnits = GetFormationClassUnitLimit(pPlayer, pPlayerCivName, 
-					nSeaUnitCityMultiplier, nSeaUnitDistrictMultiplier, nSeaUnitBuildingMultiplier, nSeaPalaceUnitTypeQuota, 
-					pSeaDistrictType, tSeaDistrictBuildingsTable, pSeaUnitForcesType);
+				nAllowedSeaUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSeaUnitCityMultiplier,
+																											nSeaPalaceUnitTypeQuota, pSeaUnitForcesType);
 			end
 			isSeaAvailable = (nAllowedSeaUnits > nSeaUnitCount);
 			if G_IsDebug then 
@@ -600,9 +553,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 			if isCityState then	
 				nAllowedSupportUnits = nCityStateAllowedSupportUnits;
 			else
-				nAllowedSupportUnits = GetFormationClassUnitLimit(pPlayer, pPlayerCivName, 
-					nSupportUnitCityMultiplier, nSupportUnitDistrictMultiplier, nSupportUnitBuildingMultiplier, nSupportPalaceUnitTypeQuota, 
-					pSupportDistrictType, tSupportDistrictBuildingsTable, pSupportUnitForcesType);
+				nAllowedSupportUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSupportUnitCityMultiplier,
+																													nSupportPalaceUnitTypeQuota, pSupportUnitForcesType);
 			end
 			isSupportAvailable = (nAllowedSupportUnits > nSupportUnitCount);
 			if G_IsDebug then 
@@ -617,9 +569,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 		------ Holy Unit -------------------------------------------------------------------------------------------------------------------------------------------------------
 		local nAllowedHolyUnits = 1;
 		if nHolyUnitCount > 0 then
-			nAllowedHolyUnits = GetFormationClassUnitLimit(pPlayer, pPlayerCivName, 
-				nHolyUnitCityMultiplier, nHolyUnitDistrictMultiplier, nHolyUnitBuildingMultiplier, nHolyPalaceUnitTypeQuota, 
-				pHolyDistrictType, tHolyDistrictBuildingsTable, pHolyUnitForcesType);
+			nAllowedHolyUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nHolyUnitCityMultiplier,
+																										 nHolyPalaceUnitTypeQuota, pHolyUnitForcesType);
 			isHolyAvailable = (nAllowedHolyUnits > nHolyUnitCount);
 			if G_IsDebug then 
 				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nHolyUnitCount.." 个'"..pHolyUnitForcesType..
@@ -638,8 +589,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 			if isCityState then	
 				nAllowedBuilderUnits = nCityStateAllowedBuilderUnits;
 			else
-				nAllowedBuilderUnits = GetIndividualUnitLimit(pPlayer, pPlayerCivName, 
-					nBuilderUnitCityMultiplier, nBuilderPalaceUnitTypeQuota, pBuilderUnitForcesType);
+				nAllowedBuilderUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nBuilderUnitCityMultiplier,
+																											 nBuilderPalaceUnitTypeQuota, pBuilderUnitForcesType);
 			end
 			isBuilderAvailable = (nAllowedBuilderUnits > nBuilderUnitCount);
 			if G_IsDebug then 
@@ -659,8 +610,8 @@ function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
 			if isCityState then	
 				nAllowedSettlerUnits = nCityStateAllowedSettlerUnits;
 			else
-				nAllowedSettlerUnits = GetIndividualUnitLimit(pPlayer, pPlayerCivName, 
-					nSettlerUnitCityMultiplier, nSettlerPalaceUnitTypeQuota, pSettlerUnitForcesType);
+				nAllowedSettlerUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSettlerUnitCityMultiplier,
+																											 nSettlerPalaceUnitTypeQuota, pSettlerUnitForcesType);
 			end
 			isSettlerAvailable = (nAllowedSettlerUnits > nSettlerUnitCount);
 			if G_IsDebug then 
@@ -729,7 +680,7 @@ function OnPlayerTurnActivated( playerID, isFirstTimeThisTurn )
 		print( "[ UL::OnPlayerTurnActivated 回合开始事件 ] 玩家'"..tostring(playerID).."', 文明'"..civName.."'." ); print(" ");
 	end
 	UpdateMaxNumberOfUnit( playerID, isFirstTimeThisTurn, nil, 0 );
-	InitExemptCityTable(playerID);
+	InitProcessedCity(playerID);
 end
 
 function OnUnitRemovedFromMap( playerID, unitID )
@@ -785,7 +736,7 @@ function ProcessProductionQueue(playerID, cityID, orderType, unitType, canceled,
 			and productionName ~= pBuilderBuilding
 			and productionName ~= pSettlerBuilding then	
 		UpdateCurrentCity(playerID, cityID, eventID);
-		UpdateExemptCityTable(playerID, cityID);
+		UpdateProcessedCity(playerID, cityID);
 	end
 end
 
@@ -835,3 +786,6 @@ if bExecuteThisFile then
 else
 	print("bExecuteThisFile is False: No Game Events Activated")
 end
+
+
+-- TODO: buy a unit to check if limit works
