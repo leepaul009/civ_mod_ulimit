@@ -209,12 +209,12 @@ function UpdateAllCityStatus(pPlayer, target_city_id, building_index, num_max, n
 
 		if is_on_build then
 			if num_exist < num_max then
-				PlaceBuildingInCityCenter(target_city, building_index); -- 此城市启动
+				PlaceBuildingInCityCenter(target_city, building_index); -- 此城市启动 【多余操作可被注释】
 			elseif num_exist == num_max then
 				-- case unit complete + exist==max(unit_forces_type) + not empty queue + queue item is unit_forces_type  ==> add building_index to target_city
 				for i, city in player_cities:Members() do
 					if city:GetID() == target_city_id then
-						PlaceBuildingInCityCenter(city, building_index); -- 此城市启动
+						PlaceBuildingInCityCenter(city, building_index); -- 此城市启动 【多余操作可被注释】
 					else -- city other than target city:
 						-- 如果是自然的unit complete，是不需要这步的；因为后一个event必然是init，这里会计算这步的
 						-- 但如果是用金币、信仰买的unit complete，exist==max表示complete前，没有到上限，所有城市可以建造；而complete后，加上queue内单位，刚好到上限，需要此步
