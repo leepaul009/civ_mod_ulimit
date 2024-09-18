@@ -187,15 +187,15 @@ end
 
 -- 对目标类型单位（陆地，海洋...）进行处理。 6 space + 8 space
 ---- 参数： building_index: “目标类型单位”对应的“启动建筑”的index
-function UpdateAllCityStatus(pPlayer, target_city_id, building_index, num_max, num_exist, formation_class_table, unit_forces_type, event_id)
-	if G_IsDebug then print("      [UL::UpdateAllCityStatus]") end
+function EnableDisableUnitToCities(pPlayer, target_city_id, building_index, num_max, num_exist, formation_class_table, unit_forces_type, event_id)
+	if G_IsDebug then print("      [UL::EnableDisableUnitToCities]") end
 	local build_is_allowed = (num_max > num_exist);
 	local player_id      = pPlayer:GetID();
 	local pPlayerConfig  = PlayerConfigurations[ player_id ];
 	local civ_name       = pPlayerConfig:GetCivilizationTypeName();
 	local player_cities  = pPlayer:GetCities();
 	local building_type  = GameInfo.Buildings[building_index].BuildingType;
-	
+
 	if target_city_id ~= nil then --------------------------------------------
 		-- 存在target city时，表示“建设事件”，我们只处理这个城市
 		-- 如果是unit complete事件, or unit change事件:
@@ -233,12 +233,12 @@ function UpdateAllCityStatus(pPlayer, target_city_id, building_index, num_max, n
 				end
 			end
 		else
-			if num_exist < num_max then -- 所有城市启动
+			if num_exist < num_max then
 				for i, city in player_cities:Members() do
-					PlaceBuildingInCityCenter(city, building_index); 【0903CHANGE：多余操作可被注释】
+					PlaceBuildingInCityCenter(city, building_index); -- 如果 当前等于max, 改建其他类型, 则当前类型小于max，需恢复所有
 				end
 			else -- num_exist >= num_max
-				RemoveBuildingFromCityCenter(target_city, building_index); -- 只禁止此城市，不需要禁止其他城市 【0903CHANGE：可能是 多余操作可被注释】
+				RemoveBuildingFromCityCenter(target_city, building_index); -- 只禁此城市
 			end
 		end
 	else --------------------------------------------
@@ -317,7 +317,11 @@ end
 ---------------------------------------------------------------------
 ---------------------------------------------------------------------
 -- 计算每种单位的数量:
-function GetUnitLimitByUnitClass(player, civ_name, population_rate, num_from_palace, unit_forces_type)
+function GetUnitLimitByUnitClass(player, civ_name, population_rate, num_from_palace, unit_forces_type,
+																 is_city_state, max_num_from_city_state)
+	if is_city_state then
+		return max_num_from_city_state;
+	end
 	local num_city = player:GetCities():GetCount();
 	if num_city == nil or num_city == 0 or num_city == -1 then
 		if G_IsDebug then print ("  [UL::计算最大单位数量] " .. civ_name .. " 没有城市, max unit = 0.") end
@@ -366,11 +370,11 @@ function getNumOfUnitsInProductionQueue( pPlayerID )
 		if G_IsDebug then print("    [UL::得到建设槽里的单位数量] Error! Invalid player instance with given playerID! " ); end
 		return nil;
 	end
-	
+
 	local pCities = pPlayer:GetCities();
 	for i, iCity in pCities:Members() do
 		if G_IsDebug then print("    [UL::计算正在建设的单位数量] 城市 "..Locale.Lookup(iCity:GetName())..":" ); end
-		
+
 		local cityID = iCity:GetID();
 		local unitInQueue = ExposedMembers.UnitLimitInfo.GetUnitInQueue(pPlayerID, cityID); --{type, index, name}
 
@@ -463,181 +467,147 @@ end
 ---------------------------------------------------------------------
 ----------------------------------------------- 主函数: Event Hooks and Iterative Functions ---------------------------------------------------
 -- bIsFirstTime: not used
-function UpdateMaxNumberOfUnit(inPlayerID, bIsFirstTime, targetCityID, eventID)
-  if inPlayerID == 63 then
-		if G_IsDebug then print("[UL::主函数] ------------ 当前玩家是'野蛮人', "..tostring(inPlayerID)..", 什么都不做 ------------ ") end
+function UpdateMaxNumberOfUnit(player_id, bIsFirstTime, target_city_id, event_id)
+  if player_id == 63 then
+		if G_IsDebug then print("[UL::主函数] ------------ 当前玩家是'野蛮人', "..tostring(player_id)..", 什么都不做 ------------ ") end
 		return;
-  elseif inPlayerID ~= nil and inPlayerID ~= 63 and inPlayerID ~= -1 then
-	local pPlayer            = Players[ inPlayerID ];
-	local pPlayerConfig  	 = PlayerConfigurations[ inPlayerID ];
-	local pPlayerCivName 	 = pPlayerConfig:GetCivilizationTypeName();
-	local pPlayerCapitalCity = pPlayer:GetCities():GetCapitalCity();
-	local isCityState = false;
+  elseif player_id ~= nil and player_id ~= 63 and player_id ~= -1 then
+	local player_obj            = Players[ player_id ];
+	local player_config  	 = PlayerConfigurations[ player_id ];
+	local player_civ_name 	 = player_config:GetCivilizationTypeName();
+	local player_capital_city = player_obj:GetCities():GetCapitalCity();
+	local is_city_state = false;
 
 	if G_IsDebug then print("[UL::主函数] 开始 ---------------------------------------------------------- ") end
 
-	if CityStateDetecter(pPlayerCivName) then
-		isCityState = true;
+	if CityStateDetecter(player_civ_name) then
+		is_city_state = true;
 	end
-	
-	if pPlayerCapitalCity ~= nil then
-		
-		local numUnitTypeInQueue :table = getNumOfUnitsInProductionQueue( inPlayerID );
-		local numUnitTypeExisted :table = getNumOfUnitExist( pPlayer );
-		-- 现存的数量
-		local nLandUnitCount 	= numUnitTypeInQueue.land 	 + numUnitTypeExisted.land;
-		local nSeaUnitCount 	= numUnitTypeInQueue.sea 	 + numUnitTypeExisted.sea;
-		local nSupportUnitCount = numUnitTypeInQueue.support + numUnitTypeExisted.support;
-		local nHolyUnitCount 	= numUnitTypeInQueue.holy 	 + numUnitTypeExisted.holy;
-		local nBuilderUnitCount = numUnitTypeInQueue.builder + numUnitTypeExisted.builder;
-		local nSettlerUnitCount = numUnitTypeInQueue.settler + numUnitTypeExisted.settler;
 
-		-- local pPlayerCapitalCityBuildings = pPlayerCapitalCity:GetBuildings();
-		-- true if production is available.
-		local isLandAvailable 		= true;
-		local isHolyAvailable		= true;
-		local isSeaAvailable		= true;
-		local isSupportAvailable 	= true;
-		local isBuilderAvailable 	= true;
-		local isSettlerAvailable 	= true;		
-		
+	if player_capital_city ~= nil then
+		local num_info_on_build :table = getNumOfUnitsInProductionQueue( player_id );
+		local num_info_existed :table = getNumOfUnitExist( player_obj );
+		-- 现存的数量
+		local num_land_unit 		= num_info_on_build.land 	 + num_info_existed.land;
+		local num_sea_unit 			= num_info_on_build.sea 	 + num_info_existed.sea;
+		local num_support_unit 	= num_info_on_build.support + num_info_existed.support;
+		local num_religion_unit = num_info_on_build.holy 	 + num_info_existed.holy;
+		local num_builder_unit 	= num_info_on_build.builder + num_info_existed.builder;
+		local num_settler_unit 	= num_info_on_build.settler + num_info_existed.settler;
+
 
 		------ Land Unit -------------------------------------------------------------------------------------------------------------------------------------------------------
 		if G_IsDebug then print("[UL::主函数] 陆地单位: ---------------------------------------------------------- ") end
-		local nAllowedLandUnits = 1;
-		if nLandUnitCount > 0 then
-			if isCityState then	
-				nAllowedLandUnits = nCityStateAllowedLandUnits;
-			else
-				nAllowedLandUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nLandUnitCityMultiplier,
-																											 nLandPalaceUnitTypeQuota, pLandUnitForcesType);
-			end
-			isLandAvailable = (nAllowedLandUnits > nLandUnitCount);
-			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nLandUnitCount.." 个'"..pLandUnitForcesType..
-					"'单位((in-queue + existed). 可以建造 "..nAllowedLandUnits.." 个. 可以建造此单位吗? "..tostring(isLandAvailable).."!" );
+		local max_num_lane_unit = 1;
+		if num_land_unit > 0 then
+			max_num_lane_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nLandUnitCityMultiplier,
+																									nLandPalaceUnitTypeQuota, pLandUnitForcesType, is_city_state, nCityStateAllowedLandUnits);
+			if G_IsDebug then
+				local is_available = (max_num_lane_unit > num_land_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_land_unit.." 个'"..pLandUnitForcesType..
+					"'单位((in-queue + existed). 可以建造 "..max_num_lane_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-		-- update each city's production queue. 0代表isNotAllow=0，表示可以制造。
-		UpdateAllCityStatus(pPlayer, targetCityID, GameInfo.Buildings[pLandBuilding].Index, nAllowedLandUnits, nLandUnitCount, tLandFormationClassTable, pLandUnitForcesType, eventID);
+		EnableDisableUnitToCities(player_obj, target_city_id, GameInfo.Buildings[pLandBuilding].Index, max_num_lane_unit, num_land_unit,
+														  tLandFormationClassTable, pLandUnitForcesType, event_id);
 
-		
-		
 		
 		------ Sea Unit -------------------------------------------------------------------------------------------------------------------------------------------------------	
 		if G_IsDebug then print("[UL::主函数] 海洋单位: ---------------------------------------------------------- ") end
-		local nAllowedSeaUnits = 1;
-		if nSeaUnitCount > 0 then
-			if isCityState then	
-				nAllowedSeaUnits = nCityStateAllowedSeaUnits;
-			else
-				nAllowedSeaUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSeaUnitCityMultiplier,
-																											nSeaPalaceUnitTypeQuota, pSeaUnitForcesType);
-			end
-			isSeaAvailable = (nAllowedSeaUnits > nSeaUnitCount);
+		local max_num_sea_unit = 1;
+		if num_sea_unit > 0 then
+			max_num_sea_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nSeaUnitCityMultiplier,
+																							   nSeaPalaceUnitTypeQuota, pSeaUnitForcesType, is_city_state, nCityStateAllowedSeaUnits);
 			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nSeaUnitCount.." 个'"..pSeaUnitForcesType..
-					" 单位(in-queue + existed). 可以建造 "..nAllowedSeaUnits.." 个. 可以建造此单位吗? "..tostring(isSeaAvailable).."!" );
+				local is_available = (max_num_sea_unit > num_sea_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_sea_unit.." 个'"..pSeaUnitForcesType..
+					" 单位(in-queue + existed). 可以建造 "..max_num_sea_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-
-		UpdateAllCityStatus(pPlayer, targetCityID, GameInfo.Buildings[pSeaBuilding].Index, nAllowedSeaUnits, nSeaUnitCount, tSeaFormationClassTable, pSeaUnitForcesType, eventID);
-
+		EnableDisableUnitToCities(player_obj, target_city_id, GameInfo.Buildings[pSeaBuilding].Index, max_num_sea_unit, num_sea_unit,
+															tSeaFormationClassTable, pSeaUnitForcesType, event_id);
 
 
 		if G_IsDebug then print("[UL::主函数] 辅助单位: ---------------------------------------------------------- ") end
 		------ Support Unit -------------------------------------------------------------------------------------------------------------------------------------------------------
-		local nAllowedSupportUnits = 1;
-		if nSupportUnitCount > 0 then
-			
-			if isCityState then	
-				nAllowedSupportUnits = nCityStateAllowedSupportUnits;
-			else
-				nAllowedSupportUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSupportUnitCityMultiplier,
-																													nSupportPalaceUnitTypeQuota, pSupportUnitForcesType);
-			end
-			isSupportAvailable = (nAllowedSupportUnits > nSupportUnitCount);
-			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nSupportUnitCount.." 个'"..pSupportUnitForcesType..
-					" 单位(in-queue + existed). 可以建造 "..nAllowedSupportUnits.." 个. 可以建造此单位吗? "..tostring(isSupportAvailable).."!" );
+		local max_num_support_unit = 1;
+		if num_support_unit > 0 then
+			max_num_support_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nSupportUnitCityMultiplier,
+																										 nSupportPalaceUnitTypeQuota, pSupportUnitForcesType, is_city_state, nCityStateAllowedSupportUnits);
+			if G_IsDebug then
+				local is_available = (max_num_support_unit > num_support_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_support_unit.." 个'"..pSupportUnitForcesType..
+					" 单位(in-queue + existed). 可以建造 "..max_num_support_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-		UpdateAllCityStatus(pPlayer, targetCityID, GameInfo.Buildings[pSupportBuilding].Index, nAllowedSupportUnits, nSupportUnitCount, tSupportFormationClassTable, pSupportUnitForcesType, eventID);
+		EnableDisableUnitToCities(player_obj, target_city_id, GameInfo.Buildings[pSupportBuilding].Index, max_num_support_unit, num_support_unit,
+															tSupportFormationClassTable, pSupportUnitForcesType, event_id);
 
 
 		if G_IsDebug then print("[UL::主函数] 宗教单位: ---------------------------------------------------------- ") end
 		------ Holy Unit -------------------------------------------------------------------------------------------------------------------------------------------------------
-		local nAllowedHolyUnits = 1;
-		if nHolyUnitCount > 0 then
-			nAllowedHolyUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nHolyUnitCityMultiplier,
-																										 nHolyPalaceUnitTypeQuota, pHolyUnitForcesType);
-			isHolyAvailable = (nAllowedHolyUnits > nHolyUnitCount);
-			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nHolyUnitCount.." 个'"..pHolyUnitForcesType..
-					" 单位(in-queue + existed). 可以建造 "..nAllowedHolyUnits.." 个. 可以建造此单位吗? "..tostring(isHolyAvailable).."!" );
+		local max_num_religion_unit = 1;
+		if num_religion_unit > 0 then
+			max_num_religion_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nHolyUnitCityMultiplier,
+																										  nHolyPalaceUnitTypeQuota, pHolyUnitForcesType, is_city_state, 0);
+			if G_IsDebug then
+				local is_available = (max_num_religion_unit > num_religion_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_religion_unit.." 个'"..pHolyUnitForcesType..
+					" 单位(in-queue + existed). 可以建造 "..max_num_religion_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-		UpdateAllCityStatus(pPlayer, targetCityID, GameInfo.Buildings[pHolyBuilding].Index, nAllowedHolyUnits, nHolyUnitCount, tHolyFormationClassTable, pHolyUnitForcesType, eventID);
+		EnableDisableUnitToCities(player_obj, target_city_id, GameInfo.Buildings[pHolyBuilding].Index, max_num_religion_unit, num_religion_unit,
+															tHolyFormationClassTable, pHolyUnitForcesType, event_id);
 		
-
 
 		if G_IsDebug then print("[UL::主函数] 工人单位: ---------------------------------------------------------- ") end
 		------ Builder -------------------------------------------------------------------------------------------------------------------------------------------------------
-		local nAllowedBuilderUnits = 1;
-		if nBuilderUnitCount > 0 then
-			
-			if isCityState then	
-				nAllowedBuilderUnits = nCityStateAllowedBuilderUnits;
-			else
-				nAllowedBuilderUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nBuilderUnitCityMultiplier,
-																											 nBuilderPalaceUnitTypeQuota, pBuilderUnitForcesType);
-			end
-			isBuilderAvailable = (nAllowedBuilderUnits > nBuilderUnitCount);
-			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nBuilderUnitCount.." 个'"..pBuilderUnitForcesType..
-					" 单位(in-queue + existed). 可以建造 "..nAllowedBuilderUnits.." 个. 可以建造此单位吗? "..tostring(isBuilderAvailable).."!" );
+		local max_num_builder_unit = 1;
+		if num_builder_unit > 0 then
+			max_num_builder_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nBuilderUnitCityMultiplier,
+																										nBuilderPalaceUnitTypeQuota, pBuilderUnitForcesType, is_city_state, nCityStateAllowedBuilderUnits);	
+			if G_IsDebug then
+				local is_available = (max_num_builder_unit > num_builder_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_builder_unit.." 个'"..pBuilderUnitForcesType..
+					" 单位(in-queue + existed). 可以建造 "..max_num_builder_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-		UpdateAllCityStatus(pPlayer, targetCityID,  GameInfo.Buildings[pBuilderBuilding].Index, nAllowedBuilderUnits, nBuilderUnitCount, iBuilderUnit, pBuilderUnitForcesType, eventID);
+		EnableDisableUnitToCities(player_obj, target_city_id,  GameInfo.Buildings[pBuilderBuilding].Index,
+															 max_num_builder_unit, num_builder_unit, iBuilderUnit, pBuilderUnitForcesType, event_id);
 
 			
-
 		if G_IsDebug then print("[UL::主函数] 移民者单位: ---------------------------------------------------------- ") end
 		------ Settler -------------------------------------------------------------------------------------------------------------------------------------------------------
-		local nAllowedSettlerUnits = 1;
-		if nSettlerUnitCount > 0 then
-			
-			if isCityState then	
-				nAllowedSettlerUnits = nCityStateAllowedSettlerUnits;
-			else
-				nAllowedSettlerUnits = GetUnitLimitByUnitClass(pPlayer, pPlayerCivName, nSettlerUnitCityMultiplier,
-																											 nSettlerPalaceUnitTypeQuota, pSettlerUnitForcesType);
-			end
-			isSettlerAvailable = (nAllowedSettlerUnits > nSettlerUnitCount);
-			if G_IsDebug then 
-				print ("[UL::主函数] "..pPlayerCivName.." 拥有 "..nSettlerUnitCount.." 个'"..pSettlerUnitForcesType..
-					" 单位(in-queue + existed). 可以建造 "..nAllowedSettlerUnits.." 个. 可以建造此单位吗? "..tostring(isSettlerAvailable).."!" );
+		local max_num_settler_unit = 1;
+		if num_settler_unit > 0 then
+			max_num_settler_unit = GetUnitLimitByUnitClass(player_obj, player_civ_name, nSettlerUnitCityMultiplier,
+																										nSettlerPalaceUnitTypeQuota, pSettlerUnitForcesType, is_city_state, nCityStateAllowedSettlerUnits);
+			if G_IsDebug then
+				local is_available = (max_num_settler_unit > num_settler_unit);
+				print ("[UL::主函数] "..player_civ_name.." 拥有 "..num_settler_unit.." 个'"..pSettlerUnitForcesType..
+					" 单位(in-queue + existed). 可以建造 "..max_num_settler_unit.." 个. 可以建造此单位吗? "..tostring(is_available).."!" );
 			end
 		end
-		UpdateAllCityStatus(pPlayer, targetCityID, GameInfo.Buildings[pSettlerBuilding].Index, nAllowedSettlerUnits, nSettlerUnitCount, iSettlerUnit, pSettlerUnitForcesType, eventID);
+		EnableDisableUnitToCities(player_obj, target_city_id, GameInfo.Buildings[pSettlerBuilding].Index, 
+															max_num_settler_unit, num_settler_unit, iSettlerUnit, pSettlerUnitForcesType, event_id);
 
 
 		if G_BaseDebug then
-			print ("[UL::主函数] "..pPlayerCivName.." 拥有:");
-			print ("      陆地单位 "..nLandUnitCount.." / "..nAllowedLandUnits..""); 
-			print ("      海洋单位 "..nSeaUnitCount.." / "..nAllowedSeaUnits..""); 
-			print ("      辅助单位 "..nSupportUnitCount.." / "..nAllowedSupportUnits..""); 
-			print ("      宗教单位 "..nHolyUnitCount.." / "..nAllowedHolyUnits..""); 
-			print ("      工人单位 "..nBuilderUnitCount.." / "..nAllowedBuilderUnits..""); 
-			print ("      移民者单位 "..nSettlerUnitCount.." / "..nSettlerUnitCount..""); 
+			print ("[UL::主函数] "..player_civ_name.." 拥有:");
+			print ("      陆地单位 "..num_land_unit.." / "..max_num_lane_unit..""); 
+			print ("      海洋单位 "..num_sea_unit.." / "..max_num_sea_unit..""); 
+			print ("      辅助单位 "..num_support_unit.." / "..max_num_support_unit..""); 
+			print ("      宗教单位 "..num_religion_unit.." / "..max_num_religion_unit..""); 
+			print ("      工人单位 "..num_builder_unit.." / "..max_num_builder_unit..""); 
+			print ("      移民者单位 "..num_settler_unit.." / "..max_num_settler_unit..""); 
 		end
 
 	end -- if 存在首都
-  end -- if 合法的inPlayerID 
+  end -- if 合法的player_id 
 end
 
 
---==================================================================================================================== 
+
 
 
 
